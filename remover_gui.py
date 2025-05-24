@@ -1,9 +1,13 @@
 import os
 import io
 import customtkinter as ctk
+from CTkMessagebox import CTkMessagebox
+import tkinter.messagebox as messagebox
+import webbrowser
 from tkinter import filedialog
 from PIL import Image, ImageTk
 from rembg import remove
+from tkinterdnd2 import DND_FILES, TkinterDnD
 
 # Import the tooltip class from the separate file
 from tooltip import HoverTooltip
@@ -24,6 +28,9 @@ class BGRemoverApp(ctk.CTk):
             "resize_percent": 100,  # Keep original size
             "upscale_factor": 1     # No upscaling by default
         }
+
+        # Output directory for processed images
+        self.output_directory = ""
 
         self.init_ui()
 
@@ -77,6 +84,21 @@ class BGRemoverApp(ctk.CTk):
         # Remove button
         ctk.CTkButton(self, text="Remove Background", command=self.remove_background).pack(pady=20)
 
+        # Output directory selection
+        ctk.CTkButton(self, text="Choose Output Folder", command=self.choose_output_directory).pack(pady=5)
+        self.output_label = ctk.CTkLabel(self, text="Output: Not selected", text_color="gray")
+        self.output_label.pack(pady=2)
+        
+        # Progress bar
+        self.progress_bar = ctk.CTkProgressBar(self, width=300)
+        self.progress_bar.set(0)
+        self.progress_bar.pack(pady=10)
+        self.progress_bar.pack_forget()  # Hide initially
+
+        # Theme switch
+        self.theme_switch = ctk.CTkSwitch(self, text="Dark Mode", command=self.toggle_theme)
+        self.theme_switch.pack(pady=5)
+
     def create_slider(self, label_text, from_, to, default):
         frame = ctk.CTkFrame(self)
         frame.pack(pady=5)
@@ -108,6 +130,13 @@ class BGRemoverApp(ctk.CTk):
         slider.label = label
 
         return slider
+    
+    # Toggle theme method
+    def toggle_theme(self):
+        if self.theme_switch.get():
+            ctk.set_appearance_mode("dark")
+        else:
+            ctk.set_appearance_mode("light")
 
     def toggle_default_settings(self):
         """Enable/disable sliders based on default checkbox state"""
@@ -206,49 +235,87 @@ class BGRemoverApp(ctk.CTk):
             self.selected_files.remove(file)
         self.display_thumbnails()
 
+    def choose_output_directory(self):
+        directory = filedialog.askdirectory()
+        if directory:
+            self.output_directory = directory
+            self.output_label.configure(text=f"Output: {directory}")
+
+    def ensure_output_directory(self):
+        """Ensure output directory is set. If not, prompt user to use Desktop/output_images or choose manually."""
+        if not self.output_directory:
+            # Suggest Desktop/output_images as default
+            import tkinter.messagebox as messagebox
+            import os
+            from pathlib import Path
+            desktop = str(Path.home() / "Desktop")
+            default_dir = os.path.join(desktop, "output_images")
+            response = messagebox.askyesno(
+                "No Output Directory",
+                f"No output directory selected.\nWould you like to use this default location?\n\n{default_dir}"
+            )
+            if response:
+                os.makedirs(default_dir, exist_ok=True)
+                self.output_directory = default_dir
+                self.output_label.configure(text=f"Output: {default_dir}")
+                return True
+            else:
+                self.choose_output_directory()
+                return bool(self.output_directory)
+        return True
+
     def remove_background(self):
         if not self.selected_files:
-            ctk.CTkMessageBox.show_error("⚠️ No Images Selected", "Please select images to remove backgrounds.")
+            messagebox.showwarning("⚠️ No Images Selected", "Please select images to remove backgrounds.")
             return
-        
+
+        # Use ensure_output_directory to handle default and prompt
+        if not self.ensure_output_directory():
+            return
+
+        self.progress_bar.pack()
+        self.progress_bar.set(0)
+        self.update_idletasks()
         settings = self.get_current_settings()
+        
+        try:
+            output_format = self.format_option.get().lower()
+            processed_count = 0
+            total = len(self.selected_files)
 
-        output_format = self.format_option.get().lower()
-        output_dir = "output_images"
-
-        os.makedirs(output_dir, exist_ok=True)
-
-        for file in self.selected_files:
-            try:
-                with open(file, 'rb') as f:
-                    input_data = f.read()
-                    output_data = remove(input_data)
-                
-                # Open as a PIL image
-                img = Image.open(io.BytesIO(output_data)).convert("RGBA")
-
-                # Resize if needed
-                if settings["resize_percent"] != 100:
-                    new_size = (int(img.width * settings["resize_percent"] / 100), 
-                                int(img.height * settings["resize_percent"] / 100))
-                    img = img.resize(new_size, Image.LANCZOS)
-                
-                # Smooth edges if enabled
-                if settings["smooth_edges"] > 0:
-                    img = img.filter(ImageFilter.GaussianBlur(radius=settings["smooth_edges"]))
-
-                # Upscale if needed
-                if settings["upscale_factor"] > 1:
-                    new_size = (img.width * settings["upscale_factor"], img.height * settings["upscale_factor"])
-                    img = img.resize(new_size, Image.LANCZOS)
-
-                # Save in the selected format
-                filename = os.path.splitext(os.path.basename(file))[0]
-                out_path = os.path.join(output_dir, f"{filename}_no_bg.{output_format}")
-                img.save(out_path, format=output_format.upper())
-                print(f"✅ Processed: {file} -> {out_path}")
-            except Exception as e:
-                print(f"❌ Error processing {file}: {e}")
+            for i, file in enumerate(self.selected_files):
+                try:
+                    with open(file, 'rb') as f:
+                        input_data = f.read()
+                        output_data = remove(input_data)
+                    img = Image.open(io.BytesIO(output_data)).convert("RGBA")
+                    if settings["resize_percent"] != 100:
+                        new_size = (int(img.width * settings["resize_percent"] / 100), 
+                                    int(img.height * settings["resize_percent"] / 100))
+                        img = img.resize(new_size, Image.LANCZOS)
+                    if settings["smooth_edges"] > 0:
+                        img = img.filter(ImageFilter.GaussianBlur(radius=settings["smooth_edges"]))
+                    if settings["upscale_factor"] > 1:
+                        new_size = (img.width * settings["upscale_factor"], img.height * settings["upscale_factor"])
+                        img = img.resize(new_size, Image.LANCZOS)
+                    filename = os.path.splitext(os.path.basename(file))[0]
+                    out_path = os.path.join(self.output_directory, f"{filename}_no_bg.{output_format}")
+                    img.save(out_path, format=output_format.upper())
+                    processed_count += 1
+                except Exception as e:
+                    print(f"❌ Error processing {file}: {e}")
+                    messagebox.showerror("❌ Failed to process {file}", str(e))
+                self.progress_bar.set((i + 1) / total)
+                self.update_idletasks()
+            self.progress_bar.set(0)
+            if processed_count > 0:
+                messagebox.showinfo("Done", f"✅ Processed {processed_count} image(s) successfully.")
+                webbrowser.open(self.output_directory)
+            else:
+                messagebox.showwarning("Nothing Processed", "No image was processed. Please check for errors.")
+        except Exception as err:
+            print(f"❌ Error processing file: {err}")
+            messagebox.showerror("Error", f"❌ Unexpected Error: {str(err)}")
 
 if __name__ == "__main__":
     app = BGRemoverApp()

@@ -2,7 +2,6 @@ input_images/
 original_files/
 dist/
 build/
-config/
 __pycache__/
 ui/__pycache__/
 *.spec
